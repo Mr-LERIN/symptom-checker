@@ -1,91 +1,43 @@
-# /// Symptom_checkerCLI
-# This is a command-line interface (CLI) for the Symptom Checker application.
-# It allows users to input their symptoms and receive possible diagnoses
-# based on a trained machine learning model.
-
 import json
 import os
 import joblib
-import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+from symptom_utils import match_symptoms, symptoms_to_vector
 
-# Paths (you are already inside symptom_checker_v2)
-DATA_PATH = os.path.join("data", "training_data.csv")
-ARTIFACTS_DIR = "artifacts"
-os.makedirs(ARTIFACTS_DIR, exist_ok=True)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ARTIFACTS_DIR = os.path.join(SCRIPT_DIR, "artifacts")
 
-print("Paths are set correctly.")
-print("Data path:", DATA_PATH)
-print("Artifacts folder:", ARTIFACTS_DIR)
-
-
-def load_data():
-    df = pd.read_csv(DATA_PATH)
-    # Drop stray empty/unnamed columns from the csv
-    df = df.drop(columns=[c for c in df.columns if "Unnamed" in c])
-    return df
-
-
-def build_disease_profiles(df, symptom_cols, min_frequency=0.5):
-    """
-    For each disease, find the symptoms that show up in at least
-    'min_frequency' fraction of that disease's rows. This becomes the
-    'typical symptom set' used for the explainable overlap score.
-    """
-    profiles = {}
-    for disease, group in df.groupby("prognosis"):
-        freq = group[symptom_cols].mean()  # fraction of rows where symptom=1
-        common_symptoms = freq[freq >= min_frequency].index.tolist()
-        profiles[disease] = common_symptoms
-    return profiles
-
+def load_artifacts():
+    model = joblib.load(os.path.join(ARTIFACTS_DIR, "model.joblib"))
+    with open(os.path.join(ARTIFACTS_DIR, "symptom_list.json")) as f:
+        symptom_list = json.load(f)
+    with open(os.path.join(ARTIFACTS_DIR, "disease_profiles.json")) as f:
+        disease_profiles = json.load(f)
+    with open(os.path.join(ARTIFACTS_DIR, "label_classes.json")) as f:
+        label_classes = json.load(f)
+    return model, symptom_list, disease_profiles, label_classes
 
 def main():
-    os.makedirs(ARTIFACTS_DIR, exist_ok=True)
-    print("Loading dataset...")
+    print("Loading model and artifacts...")
+    model, symptom_list, disease_profiles, label_classes = load_artifacts()
+    print(f"Model loaded. It knows {len(symptom_list)} symptoms and {len(label_classes)} diseases.\n")
 
-    df = load_data()
-    symptom_cols = [c for c in df.columns if c != "prognosis"]
+    user_input = input("Describe your symptoms (separated by commas):\n> ")
+    matched = match_symptoms(user_input, symptom_list)
+    print("\nMatched symptoms:", matched)
 
-    print(
-        f"Rows: {len(df)} | Symptoms: {len(symptom_cols)} | "
-        f"Diseases: {df['prognosis'].nunique()}"
-    )
+    if not matched:
+        print("No symptoms could be matched. Try different wording.")
+        return
 
-    X = df[symptom_cols]
-    y = df["prognosis"]
+    vector = symptoms_to_vector(matched, symptom_list)
+    print("Feature vector created (first 10 values):", vector[:10])
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
-    #Train the model
-    print("Training RandomForestClassifier...")
-    model = RandomForestClassifier(n_estimators=200, random_state=42)
-    model.fit(X_train, y_train)
+    prediction = model.predict([vector])[0]
+    probs = model.predict_proba([vector])[0]
+    confidence = max(probs)
 
-    #Evaluate the model
-    preds = model.predict(X_test)
-    accuracy = accuracy_score(y_test, preds)
-    print(f"Model accuracy: {accuracy:.4f}")
+    print(f"\nPredicted condition: {prediction}")
+    print(f"Confidence: {confidence:.2%}")
 
-    #Build disease typical symptom profiles for explainable overlap score
-    print
-    disease_profiles = build_disease_profiles(df, symptom_cols, min_frequency=0.5)
-
-    #Save the model and disease profiles
-    print("Saving Artifacts...")
-    joblib.dump(model, os.path.join(ARTIFACTS_DIR, "model.joblib"))
-    with open(os.path.join(ARTIFACTS_DIR, "symptom_list.json"), "w") as f:
-        json.dump(symptom_cols, f, indent=2)
-
-    with open(os.path.join(ARTIFACTS_DIR, "disease_profiles.json"), "w") as f:
-        json.dump(disease_profiles, f, indent=2)
-
-    with open(os.path.join(ARTIFACTS_DIR, "label_classes.json"), "w") as f:
-        json.dump(list(df["prognosis"].unique()), f, indent=2)
-
-        print("Done. Artifacts saved to:", ARTIFACTS_DIR)
-if  __name__ == "__main__":
+if __name__ == "__main__":
     main()
